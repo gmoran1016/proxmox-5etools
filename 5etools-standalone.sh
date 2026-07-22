@@ -2,106 +2,345 @@
 # =============================================================================
 # 5eTools — Standalone Proxmox LXC Installer
 # =============================================================================
-# A self-contained alternative to the community-scripts split pair.
-# Run this from the Proxmox host shell:
+# Run from the Proxmox host shell:
 #
 #   bash 5etools-standalone.sh
 #
-# It creates an LXC container, installs Node.js + git, clones 5eTools from
-# GitHub, and starts a systemd service on port 5050.
-# =============================================================================
-# Source:  https://github.com/5etools-mirror-3/5etools-src
-# License: MIT
+# The installer shows one options screen, then completes the deployment without
+# further prompts. It creates an LXC container, installs 5eTools, optionally
+# downloads images, configures updates, and starts the web service.
+#
+# Unattended examples:
+#   bash 5etools-standalone.sh --defaults
+#   bash 5etools-standalone.sh --images --auto-updates
+#   bash 5etools-standalone.sh --no-images --no-auto-updates
 # =============================================================================
 
-set -euo pipefail
+set -Eeuo pipefail
 
 # ---------------------------------------------------------------------------
-# Colour helpers
+# Colors and messages
 # ---------------------------------------------------------------------------
-YW=$(echo "\033[33m")
-GN=$(echo "\033[1;92m")
-RD=$(echo "\033[01;31m")
-CL=$(echo "\033[m")
-BFR="\\r\\033[K"
-HOLD=" "
+YW=$'\033[33m'
+GN=$'\033[1;92m'
+RD=$'\033[01;31m'
+CY=$'\033[36m'
+CL=$'\033[0m'
+BFR=$'\r\033[K'
 CM="${GN}✓${CL}"
 CROSS="${RD}✗${CL}"
 
-msg_info()  { local msg="$1"; echo -ne " ${HOLD} ${YW}${msg}...${CL}"; }
-msg_ok()    { local msg="$1"; echo -e "${BFR} ${CM} ${GN}${msg}${CL}"; }
-msg_error() { local msg="$1"; echo -e "${BFR} ${CROSS} ${RD}${msg}${CL}"; }
+msg_info()  { printf "   ${YW}%s...${CL}" "$1"; }
+msg_ok()    { printf "%s %b ${GN}%s${CL}\n" "${BFR}" "${CM}" "$1"; }
+msg_warn()  { printf " ${YW}!${CL} %s\n" "$1"; }
+msg_error() { printf "%s %b ${RD}%s${CL}\n" "${BFR}" "${CROSS}" "$1" >&2; }
+
+CURRENT_STEP="Starting installer"
+on_error() {
+  local exit_code=$?
+  echo
+  msg_error "Installation failed while: ${CURRENT_STEP}"
+  echo "   Exit code: ${exit_code}"
+  if [[ -n "${CT_ID:-}" ]] && command -v pct &>/dev/null && pct status "${CT_ID}" &>/dev/null; then
+    echo "   Container ${CT_ID} was left in place for troubleshooting."
+  fi
+  exit "${exit_code}"
+}
+trap on_error ERR
 
 # ---------------------------------------------------------------------------
-# Default container settings  (edit these if you need more resources)
+# Defaults
 # ---------------------------------------------------------------------------
-CT_ID="${1:-$(pvesh get /cluster/nextid)}"
+CT_ID=""
 CT_HOSTNAME="5etools"
-CT_PASSWORD="$(openssl rand -base64 12)"
+CT_PASSWORD=""
 CT_STORAGE="local-lvm"
-CT_DISK="20"          # GB — source repo is ~1 GB; images add ~7 GB
-CT_RAM="2048"         # MB
+CT_DISK="20"
+CT_RAM="2048"
 CT_CPU="2"
 CT_BRIDGE="vmbr0"
-CT_OS_TEMPLATE="debian-12-standard_12.7-1_amd64.tar.zst"
 CT_OS_STORAGE="local"
 SERVE_PORT="5050"
+
+INSTALL_IMAGES="no"
+ENABLE_AUTO_UPDATES="yes"
+UNATTENDED="no"
+SHOW_MENU="yes"
+
+# ---------------------------------------------------------------------------
+# CLI arguments
+# ---------------------------------------------------------------------------
+usage() {
+  cat <<'EOF'
+Usage:
+  bash 5etools-standalone.sh [container-id] [options]
+
+Options:
+  --defaults             Use defaults with no menu
+  --images               Download the optional image repository
+  --no-images            Do not download the image repository
+  --auto-updates         Enable nightly automatic updates
+  --no-auto-updates      Disable nightly automatic updates
+  --ctid ID              Use a specific container ID
+  --hostname NAME        Set the container hostname
+  --storage NAME         Set container storage
+  --template-storage NAME
+                         Set template storage
+  --bridge NAME          Set the network bridge
+  --disk GB              Set disk size
+  --ram MB               Set memory
+  --cores COUNT          Set CPU core count
+  --port PORT            Set the 5eTools web port
+  -h, --help             Show this help
+
+Examples:
+  bash 5etools-standalone.sh
+  bash 5etools-standalone.sh 120 --images
+  bash 5etools-standalone.sh --defaults
+EOF
+}
+
+while (($#)); do
+  case "$1" in
+    --defaults)
+      UNATTENDED="yes"
+      SHOW_MENU="no"
+      shift
+      ;;
+    --images)
+      INSTALL_IMAGES="yes"
+      shift
+      ;;
+    --no-images)
+      INSTALL_IMAGES="no"
+      shift
+      ;;
+    --auto-updates)
+      ENABLE_AUTO_UPDATES="yes"
+      shift
+      ;;
+    --no-auto-updates)
+      ENABLE_AUTO_UPDATES="no"
+      shift
+      ;;
+    --ctid)
+      CT_ID="${2:?Missing value for --ctid}"
+      shift 2
+      ;;
+    --hostname)
+      CT_HOSTNAME="${2:?Missing value for --hostname}"
+      shift 2
+      ;;
+    --storage)
+      CT_STORAGE="${2:?Missing value for --storage}"
+      shift 2
+      ;;
+    --template-storage)
+      CT_OS_STORAGE="${2:?Missing value for --template-storage}"
+      shift 2
+      ;;
+    --bridge)
+      CT_BRIDGE="${2:?Missing value for --bridge}"
+      shift 2
+      ;;
+    --disk)
+      CT_DISK="${2:?Missing value for --disk}"
+      shift 2
+      ;;
+    --ram)
+      CT_RAM="${2:?Missing value for --ram}"
+      shift 2
+      ;;
+    --cores)
+      CT_CPU="${2:?Missing value for --cores}"
+      shift 2
+      ;;
+    --port)
+      SERVE_PORT="${2:?Missing value for --port}"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    ''|*[!0-9]*)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      if [[ -n "${CT_ID}" ]]; then
+        echo "Container ID specified more than once." >&2
+        exit 2
+      fi
+      CT_ID="$1"
+      shift
+      ;;
+  esac
+done
 
 # ---------------------------------------------------------------------------
 # Pre-flight checks
 # ---------------------------------------------------------------------------
-if [[ $EUID -ne 0 ]]; then
+CURRENT_STEP="checking the Proxmox host"
+
+if [[ ${EUID} -ne 0 ]]; then
   msg_error "This script must be run as root on the Proxmox host"
   exit 1
 fi
 
-if ! command -v pct &>/dev/null; then
-  msg_error "pct not found — are you running this on a Proxmox VE host?"
+if ! command -v pct &>/dev/null || ! command -v pvesh &>/dev/null; then
+  msg_error "Proxmox commands were not found. Run this on a Proxmox VE host."
   exit 1
 fi
 
-echo -e "
+# Mark the local file executable when possible. This is not required when
+# invoking it with "bash", but makes future direct runs possible.
+if [[ -f "${BASH_SOURCE[0]}" ]]; then
+  chmod +x "${BASH_SOURCE[0]}" 2>/dev/null || true
+fi
+
+if [[ -z "${CT_ID}" ]]; then
+  CT_ID="$(pvesh get /cluster/nextid)"
+fi
+
+if pct status "${CT_ID}" &>/dev/null; then
+  msg_error "Container ID ${CT_ID} already exists"
+  exit 1
+fi
+
+if ! pvesm status -storage "${CT_STORAGE}" &>/dev/null; then
+  msg_error "Container storage '${CT_STORAGE}' does not exist"
+  echo "Available storage:"
+  pvesm status || true
+  exit 1
+fi
+
+if ! pvesm status -storage "${CT_OS_STORAGE}" &>/dev/null; then
+  msg_error "Template storage '${CT_OS_STORAGE}' does not exist"
+  echo "Available storage:"
+  pvesm status || true
+  exit 1
+fi
+
+if ! ip link show "${CT_BRIDGE}" &>/dev/null; then
+  msg_error "Network bridge '${CT_BRIDGE}' does not exist"
+  exit 1
+fi
+
+CT_PASSWORD="$(openssl rand -base64 18 | tr -d '/+=' | head -c 20)"
+
+# ---------------------------------------------------------------------------
+# Header and option selection
+# ---------------------------------------------------------------------------
+clear 2>/dev/null || true
+cat <<EOF
+${CY}
   ____  ___  _____           _
  | ___|/ _ \|_   _|__   ___ | |___
  |___ \ (_) | | |/ _ \ / _ \| / __|
   ___) \__, | | | (_) | (_) | \__ \\
  |____/  /_/  |_|\___/ \___/|_|___/
- 
+${CL}
   Local 5eTools — Proxmox LXC Installer
-"
+EOF
 
-echo -e " ${YW}Container ID  :${CL} ${CT_ID}"
-echo -e " ${YW}Hostname      :${CL} ${CT_HOSTNAME}"
-echo -e " ${YW}RAM           :${CL} ${CT_RAM} MB"
-echo -e " ${YW}CPU           :${CL} ${CT_CPU} cores"
-echo -e " ${YW}Disk          :${CL} ${CT_DISK} GB"
-echo -e " ${YW}Bridge        :${CL} ${CT_BRIDGE}"
-echo -e " ${YW}Serve port    :${CL} ${SERVE_PORT}"
-echo ""
+if [[ "${SHOW_MENU}" == "yes" ]]; then
+  if command -v whiptail &>/dev/null && [[ -t 0 ]]; then
+    set +e
+    CHOICES=$(whiptail \
+      --title "5eTools Installation Options" \
+      --checklist \
+      "Select optional components. Press Space to toggle, then Enter to install." \
+      16 72 4 \
+      "images" "Download full image repository (adds about 5–7 GB)" OFF \
+      "updates" "Enable nightly automatic updates" ON \
+      3>&1 1>&2 2>&3)
+    MENU_STATUS=$?
+    set -e
 
-read -rp " Proceed with installation? [y/N] " CONFIRM
-[[ "${CONFIRM,,}" != "y" ]] && { echo "Aborted."; exit 0; }
+    if [[ ${MENU_STATUS} -ne 0 ]]; then
+      echo "Installation cancelled."
+      exit 0
+    fi
+
+    INSTALL_IMAGES="no"
+    ENABLE_AUTO_UPDATES="no"
+    [[ "${CHOICES}" == *'"images"'* ]] && INSTALL_IMAGES="yes"
+    [[ "${CHOICES}" == *'"updates"'* ]] && ENABLE_AUTO_UPDATES="yes"
+  elif [[ -t 0 ]]; then
+    echo
+    echo "Optional components:"
+    echo "  1) Standard install"
+    echo "  2) Install with full image repository"
+    echo "  3) Standard install without automatic updates"
+    echo "  4) Install images without automatic updates"
+    echo
+    read -r -p "Select [1-4, default 1]: " MENU_CHOICE
+    case "${MENU_CHOICE:-1}" in
+      1) INSTALL_IMAGES="no";  ENABLE_AUTO_UPDATES="yes" ;;
+      2) INSTALL_IMAGES="yes"; ENABLE_AUTO_UPDATES="yes" ;;
+      3) INSTALL_IMAGES="no";  ENABLE_AUTO_UPDATES="no" ;;
+      4) INSTALL_IMAGES="yes"; ENABLE_AUTO_UPDATES="no" ;;
+      *) msg_error "Invalid selection"; exit 2 ;;
+    esac
+  fi
+fi
+
+echo
+echo -e " ${YW}Container ID     :${CL} ${CT_ID}"
+echo -e " ${YW}Hostname         :${CL} ${CT_HOSTNAME}"
+echo -e " ${YW}RAM              :${CL} ${CT_RAM} MB"
+echo -e " ${YW}CPU              :${CL} ${CT_CPU} cores"
+echo -e " ${YW}Disk             :${CL} ${CT_DISK} GB"
+echo -e " ${YW}Bridge           :${CL} ${CT_BRIDGE}"
+echo -e " ${YW}Web port         :${CL} ${SERVE_PORT}"
+echo -e " ${YW}Install images   :${CL} ${INSTALL_IMAGES}"
+echo -e " ${YW}Automatic updates:${CL} ${ENABLE_AUTO_UPDATES}"
+echo
+echo "Installation is starting automatically."
+echo
 
 # ---------------------------------------------------------------------------
-# Download OS template if not already present
+# Locate or download the newest Debian 12 template
 # ---------------------------------------------------------------------------
-msg_info "Checking for Debian 12 template"
-TEMPLATE_PATH=$(pveam list ${CT_OS_STORAGE} 2>/dev/null \
-  | grep -m1 "${CT_OS_TEMPLATE}" | awk '{print $1}' || true)
+CURRENT_STEP="locating a Debian 12 template"
+msg_info "Checking for a Debian 12 template"
+
+TEMPLATE_PATH="$(
+  pveam list "${CT_OS_STORAGE}" 2>/dev/null |
+    awk '/debian-12-standard_.*_amd64\.tar\.(zst|gz)$/ {print $1}' |
+    sort -V |
+    tail -n1
+)"
 
 if [[ -z "${TEMPLATE_PATH}" ]]; then
-  msg_info "Downloading Debian 12 template"
+  msg_info "Downloading the latest Debian 12 template"
   pveam update &>/dev/null
+
+  CT_OS_TEMPLATE="$(
+    pveam available --section system 2>/dev/null |
+      awk '/debian-12-standard_.*_amd64\.tar\.(zst|gz)$/ {print $2}' |
+      sort -V |
+      tail -n1
+  )"
+
+  if [[ -z "${CT_OS_TEMPLATE}" ]]; then
+    msg_error "No Debian 12 template was found in the Proxmox appliance list"
+    exit 1
+  fi
+
   pveam download "${CT_OS_STORAGE}" "${CT_OS_TEMPLATE}" &>/dev/null
   TEMPLATE_PATH="${CT_OS_STORAGE}:vztmpl/${CT_OS_TEMPLATE}"
-  msg_ok "Downloaded Debian 12 template"
+  msg_ok "Downloaded ${CT_OS_TEMPLATE}"
 else
-  msg_ok "Debian 12 template already present"
+  msg_ok "Using ${TEMPLATE_PATH}"
 fi
 
 # ---------------------------------------------------------------------------
-# Create the LXC container
+# Create and start the LXC container
 # ---------------------------------------------------------------------------
+CURRENT_STEP="creating LXC container ${CT_ID}"
 msg_info "Creating LXC container ${CT_ID}"
 pct create "${CT_ID}" "${TEMPLATE_PATH}" \
   --hostname "${CT_HOSTNAME}" \
@@ -113,120 +352,129 @@ pct create "${CT_ID}" "${TEMPLATE_PATH}" \
   --net0 "name=eth0,bridge=${CT_BRIDGE},ip=dhcp,ip6=auto" \
   --features "nesting=1" \
   --unprivileged 1 \
+  --onboot 1 \
   --start 0 \
   &>/dev/null
 msg_ok "Created LXC container ${CT_ID}"
 
-# ---------------------------------------------------------------------------
-# Start container and wait for it to be ready
-# ---------------------------------------------------------------------------
+CURRENT_STEP="starting container ${CT_ID}"
 msg_info "Starting container"
 pct start "${CT_ID}" &>/dev/null
-sleep 5
+
+for _ in {1..30}; do
+  if pct exec "${CT_ID}" -- true &>/dev/null; then
+    break
+  fi
+  sleep 1
+done
+
+if ! pct exec "${CT_ID}" -- true &>/dev/null; then
+  msg_error "Container did not become ready"
+  exit 1
+fi
 msg_ok "Container started"
 
-# ---------------------------------------------------------------------------
-# Helper: run a command inside the container
-# ---------------------------------------------------------------------------
-pct_exec() { pct exec "${CT_ID}" -- bash -c "$*"; }
+pct_exec() {
+  pct exec "${CT_ID}" -- bash -lc "$1"
+}
 
 # ---------------------------------------------------------------------------
-# Update OS
+# Install operating-system dependencies
 # ---------------------------------------------------------------------------
+CURRENT_STEP="updating the container operating system"
 msg_info "Updating container OS"
-pct_exec "apt-get update -qq && apt-get upgrade -y -qq" &>/dev/null
+pct_exec "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq; apt-get upgrade -y -qq" &>/dev/null
 msg_ok "Updated container OS"
 
-# ---------------------------------------------------------------------------
-# Install dependencies
-# ---------------------------------------------------------------------------
-msg_info "Installing git, curl, and ca-certificates"
-pct_exec "apt-get install -y -qq git curl ca-certificates gnupg" &>/dev/null
+CURRENT_STEP="installing base dependencies"
+msg_info "Installing base dependencies"
+pct_exec "export DEBIAN_FRONTEND=noninteractive; apt-get install -y -qq git curl ca-certificates gnupg openssl" &>/dev/null
 msg_ok "Installed base dependencies"
 
-# ---------------------------------------------------------------------------
-# Install Node.js 22.x
-# ---------------------------------------------------------------------------
-msg_info "Installing Node.js 22.x"
-pct_exec "
-  mkdir -p /etc/apt/keyrings
-  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-    | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
-  echo 'deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main' \
+CURRENT_STEP="installing Node.js 22"
+msg_info "Installing Node.js 22"
+pct_exec '
+  install -d -m 0755 /etc/apt/keyrings
+  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key |
+    gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
+  echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
     > /etc/apt/sources.list.d/nodesource.list
   apt-get update -qq
-  apt-get install -y -qq nodejs
-" &>/dev/null
-NODE_VER=$(pct_exec "node -v" 2>/dev/null || echo "unknown")
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs
+' &>/dev/null
+NODE_VER="$(pct_exec "node -v")"
 msg_ok "Installed Node.js ${NODE_VER}"
 
 # ---------------------------------------------------------------------------
-# Clone 5eTools source
+# Install 5eTools
 # ---------------------------------------------------------------------------
-msg_info "Cloning 5eTools source from GitHub (may take a few minutes)"
+CURRENT_STEP="cloning the 5eTools source"
+msg_info "Cloning 5eTools source"
 pct_exec "git clone --depth=1 https://github.com/5etools-mirror-3/5etools-src.git /opt/5etools-src" &>/dev/null
 msg_ok "Cloned 5eTools source"
 
-# ---------------------------------------------------------------------------
-# Install Node dependencies
-# ---------------------------------------------------------------------------
-msg_info "Installing Node.js dependencies (npm install)"
+CURRENT_STEP="installing Node.js dependencies"
+msg_info "Installing Node.js dependencies"
 pct_exec "cd /opt/5etools-src && npm install --loglevel=error" &>/dev/null
 msg_ok "Installed Node.js dependencies"
 
-# ---------------------------------------------------------------------------
-# Build service worker (enables client-side caching over LAN)
-# ---------------------------------------------------------------------------
+CURRENT_STEP="building the service worker"
 msg_info "Building service worker"
 pct_exec "cd /opt/5etools-src && npm run build:sw:prod" &>/dev/null
 msg_ok "Built service worker"
 
 # ---------------------------------------------------------------------------
-# Create optional image-download helper inside container
+# Optional image repository
 # ---------------------------------------------------------------------------
-msg_info "Creating image helper script inside container"
-pct_exec "cat > /opt/install-5etools-img.sh << 'IMGEOF'
+CURRENT_STEP="creating the image installer"
+msg_info "Creating image helper"
+pct exec "${CT_ID}" -- bash -s <<'IMGHELPER'
+cat > /opt/install-5etools-img.sh <<'IMGEOF'
 #!/usr/bin/env bash
-# Run this script from INSIDE the 5eTools container to download the
-# full image repository (~5-7 GB).  Images include monster art,
-# spell illustrations, and map assets.
-#
-#   pct exec <CTID> -- bash /opt/install-5etools-img.sh
-#   # or from inside the container:
-#   bash /opt/install-5etools-img.sh
-
-echo 'Downloading 5eTools image repo — this can take 10–30+ minutes.'
+set -Eeuo pipefail
 
 if [[ -d /opt/5etools-src/img/.git ]]; then
-  echo 'Images already present; pulling latest changes...'
-  cd /opt/5etools-src/img && git pull
+  echo "Updating the 5eTools image repository..."
+  git -C /opt/5etools-src/img pull --ff-only
 else
+  echo "Downloading the 5eTools image repository..."
   git clone --depth=1 \
     https://github.com/5etools-mirror-3/5etools-img.git \
     /opt/5etools-src/img
 fi
 
-echo ''
-echo 'Done!  Restart the service to apply:'
-echo '  systemctl restart 5etools'
+systemctl restart 5etools 2>/dev/null || true
+echo "Image installation complete."
 IMGEOF
-chmod +x /opt/install-5etools-img.sh"
-msg_ok "Created /opt/install-5etools-img.sh inside container"
+chmod +x /opt/install-5etools-img.sh
+IMGHELPER
+msg_ok "Created image helper"
+
+if [[ "${INSTALL_IMAGES}" == "yes" ]]; then
+  CURRENT_STEP="downloading the image repository"
+  msg_info "Downloading image repository"
+  pct_exec "/opt/install-5etools-img.sh" &>/dev/null
+  msg_ok "Downloaded image repository"
+fi
 
 # ---------------------------------------------------------------------------
-# Create systemd service
+# Main systemd service
 # ---------------------------------------------------------------------------
-msg_info "Creating systemd service"
-pct_exec "cat > /etc/systemd/system/5etools.service << 'SVCEOF'
+CURRENT_STEP="creating the 5eTools service"
+msg_info "Creating 5eTools service"
+pct exec "${CT_ID}" -- bash -s -- "${SERVE_PORT}" <<'SERVICE'
+SERVE_PORT="$1"
+cat > /etc/systemd/system/5etools.service <<EOF
 [Unit]
 Description=5eTools local D&D reference server
-Documentation=https://wiki.tercept.net/en/5eTools/InstallGuide
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/5etools-src
-ExecStart=/usr/bin/npm run serve:dev
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/npm run serve:dev -- --host 0.0.0.0 --port ${SERVE_PORT}
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -235,81 +483,81 @@ SyslogIdentifier=5etools
 
 [Install]
 WantedBy=multi-user.target
-SVCEOF"
-
-pct_exec "systemctl daemon-reload && systemctl enable --now 5etools" &>/dev/null
-msg_ok "Created and started 5etools.service"
+EOF
+SERVICE
+msg_ok "Created 5eTools service"
 
 # ---------------------------------------------------------------------------
-# Create /usr/bin/update helper (mirrors community-scripts convention)
+# Update helper and optional timer
 # ---------------------------------------------------------------------------
-msg_info "Creating update helper (/usr/bin/update)"
-pct_exec "cat > /usr/bin/update << 'UPEOF'
+CURRENT_STEP="creating the update helper"
+msg_info "Creating update helper"
+pct exec "${CT_ID}" -- bash -s <<'UPDATER'
+cat > /usr/local/sbin/update-5etools <<'UPEOF'
 #!/usr/bin/env bash
-# Update 5eTools in-place using git pull.
-# Called nightly by the 5etools-update systemd timer, or run manually:
-#   pct exec <CTID> -- bash /usr/bin/update
+set -Eeuo pipefail
 
-set -euo pipefail
-INSTALL_DIR=\"/opt/5etools-src\"
-LOG_FILE=\"/var/log/5etools-update.log\"
+INSTALL_DIR="/opt/5etools-src"
+LOG_FILE="/var/log/5etools-update.log"
 
-log() { echo \"[\$(date '+%Y-%m-%d %H:%M:%S')] \$*\" | tee -a \"\${LOG_FILE}\"; }
+log() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "${LOG_FILE}"
+}
 
-log \"--- 5eTools update started ---\"
+restart_service() {
+  systemctl start 5etools || true
+}
+trap restart_service EXIT
 
-log \"Stopping service...\"
+log "--- 5eTools update started ---"
 systemctl stop 5etools
 
-log \"Pulling latest 5eTools source...\"
-cd \"\${INSTALL_DIR}\"
-git pull >> \"\${LOG_FILE}\" 2>&1
+log "Pulling latest 5eTools source..."
+git -C "${INSTALL_DIR}" pull --ff-only >>"${LOG_FILE}" 2>&1
 
-if [[ -d \"\${INSTALL_DIR}/img/.git\" ]]; then
-  log \"Pulling latest images...\"
-  cd \"\${INSTALL_DIR}/img\" && git pull >> \"\${LOG_FILE}\" 2>&1
-  cd \"\${INSTALL_DIR}\"
+if [[ -d "${INSTALL_DIR}/img/.git" ]]; then
+  log "Pulling latest images..."
+  git -C "${INSTALL_DIR}/img" pull --ff-only >>"${LOG_FILE}" 2>&1
 fi
 
-log \"Updating Node.js dependencies...\"
-npm install --loglevel=error >> \"\${LOG_FILE}\" 2>&1
+log "Updating Node.js dependencies..."
+cd "${INSTALL_DIR}"
+npm install --loglevel=error >>"${LOG_FILE}" 2>&1
 
-log \"Rebuilding service worker...\"
-npm run build:sw:prod >> \"\${LOG_FILE}\" 2>&1
+log "Rebuilding service worker..."
+npm run build:sw:prod >>"${LOG_FILE}" 2>&1
 
-log \"Restarting service...\"
+log "Restarting service..."
 systemctl start 5etools
-
-log \"--- 5eTools update complete ---\"
+trap - EXIT
+log "--- 5eTools update complete ---"
 UPEOF
-chmod +x /usr/bin/update"
-msg_ok "Created /usr/bin/update"
 
-# ---------------------------------------------------------------------------
-# Create systemd timer for nightly auto-update at 01:00
-# ---------------------------------------------------------------------------
-msg_info "Creating nightly auto-update timer (01:00 daily)"
+chmod +x /usr/local/sbin/update-5etools
+ln -sf /usr/local/sbin/update-5etools /usr/bin/update
+UPDATER
+msg_ok "Created update helper"
 
-# The service unit that runs the update script
-pct_exec "cat > /etc/systemd/system/5etools-update.service << 'SVEOF'
+if [[ "${ENABLE_AUTO_UPDATES}" == "yes" ]]; then
+  CURRENT_STEP="configuring automatic updates"
+  msg_info "Enabling nightly updates"
+  pct exec "${CT_ID}" -- bash -s <<'TIMER'
+cat > /etc/systemd/system/5etools-update.service <<'EOF'
 [Unit]
-Description=5eTools nightly update
+Description=Update 5eTools
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/update
+ExecStart=/usr/local/sbin/update-5etools
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=5etools-update
-SVEOF"
+EOF
 
-# The timer unit that triggers it at 01:00 every day
-pct_exec "cat > /etc/systemd/system/5etools-update.timer << 'TMEOF'
+cat > /etc/systemd/system/5etools-update.timer <<'EOF'
 [Unit]
-Description=Run 5eTools update nightly at 01:00
-Requires=5etools-update.service
+Description=Run the 5eTools updater nightly
 
 [Timer]
 OnCalendar=*-*-* 01:00:00
@@ -318,47 +566,64 @@ Persistent=true
 
 [Install]
 WantedBy=timers.target
-TMEOF"
-
-pct_exec "systemctl daemon-reload && systemctl enable --now 5etools-update.timer" &>/dev/null
-msg_ok "Nightly auto-update timer enabled (fires at 01:00, ±5 min random delay)"
-
-# ---------------------------------------------------------------------------
-# Retrieve container IP
-# ---------------------------------------------------------------------------
-sleep 3
-CT_IP=$(pct exec "${CT_ID}" -- hostname -I 2>/dev/null | awk '{print $1}' || echo "<container-ip>")
+EOF
+TIMER
+  pct_exec "systemctl daemon-reload; systemctl enable --now 5etools-update.timer" &>/dev/null
+  msg_ok "Enabled nightly updates"
+else
+  msg_ok "Automatic updates disabled"
+fi
 
 # ---------------------------------------------------------------------------
-# Done
+# Start and verify the application
 # ---------------------------------------------------------------------------
-echo ""
+CURRENT_STEP="starting the 5eTools application"
+msg_info "Starting 5eTools"
+pct_exec "systemctl daemon-reload; systemctl enable --now 5etools.service" &>/dev/null
+
+for _ in {1..60}; do
+  if pct_exec "curl -fsS http://127.0.0.1:${SERVE_PORT}/index.html >/dev/null" &>/dev/null; then
+    break
+  fi
+  sleep 2
+done
+
+if ! pct_exec "curl -fsS http://127.0.0.1:${SERVE_PORT}/index.html >/dev/null" &>/dev/null; then
+  echo
+  pct_exec "systemctl status 5etools --no-pager -l" || true
+  pct_exec "journalctl -u 5etools -n 50 --no-pager" || true
+  msg_error "5eTools did not respond on port ${SERVE_PORT}"
+  exit 1
+fi
+msg_ok "5eTools is running"
+
+# ---------------------------------------------------------------------------
+# Retrieve IP and show completion details
+# ---------------------------------------------------------------------------
+CURRENT_STEP="retrieving the container IP address"
+CT_IP=""
+for _ in {1..30}; do
+  CT_IP="$(pct exec "${CT_ID}" -- hostname -I 2>/dev/null | awk '{print $1}')"
+  [[ -n "${CT_IP}" ]] && break
+  sleep 1
+done
+CT_IP="${CT_IP:-CONTAINER-IP}"
+
+trap - ERR
+
+echo
 echo -e " ${GN}============================================================${CL}"
 echo -e " ${CM} ${GN}5eTools installation completed successfully!${CL}"
 echo -e " ${GN}============================================================${CL}"
-echo ""
-echo -e " ${YW}Container ID  :${CL} ${CT_ID}"
-echo -e " ${YW}Container IP  :${CL} ${CT_IP}"
-echo -e " ${YW}Root password :${CL} ${CT_PASSWORD}"
-echo ""
-echo -e " ${YW}Access 5eTools in your browser:${CL}"
+echo
+echo -e " ${YW}Container ID     :${CL} ${CT_ID}"
+echo -e " ${YW}Container IP     :${CL} ${CT_IP}"
+echo -e " ${YW}Root password    :${CL} ${CT_PASSWORD}"
+echo -e " ${YW}Images installed :${CL} ${INSTALL_IMAGES}"
+echo -e " ${YW}Automatic updates:${CL} ${ENABLE_AUTO_UPDATES}"
+echo
+echo -e " ${YW}Open 5eTools:${CL}"
 echo -e "   ${GN}http://${CT_IP}:${SERVE_PORT}/index.html${CL}"
-echo ""
-echo -e " ${YW}Optional — download images (~5-7 GB) for offline art:${CL}"
-echo -e "   pct exec ${CT_ID} -- bash /opt/install-5etools-img.sh"
-echo ""
-echo -e " ${YW}Auto-update     :${CL} nightly at 01:00 (systemd timer)"
-echo -e " ${YW}Update log      :${CL} /var/log/5etools-update.log (inside container)"
-echo ""
-echo -e " ${YW}Manual update:${CL}"
-echo -e "   pct exec ${CT_ID} -- bash /usr/bin/update"
-echo ""
-echo -e " ${YW}Check timer status:${CL}"
-echo -e "   pct exec ${CT_ID} -- systemctl status 5etools-update.timer"
-echo ""
-echo -e " ${YW}View update log:${CL}"
-echo -e "   pct exec ${CT_ID} -- tail -50 /var/log/5etools-update.log"
-echo ""
-echo -e " ${YW}Enter the container shell:${CL}"
-echo -e "   pct enter ${CT_ID}"
-echo ""
+echo
+echo "The container and 5eTools service are running. No additional setup is required."
+echo

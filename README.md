@@ -2,7 +2,7 @@
 
 # Proxmox 5eTools Installer
 
-### Deploy a self-hosted 5eTools instance in a Proxmox LXC container
+### Deploy a self-hosted 5eTools server in a Proxmox LXC container
 
 [![Shell](https://img.shields.io/badge/Shell-Bash-4EAA25?logo=gnu-bash&logoColor=white)](https://www.gnu.org/software/bash/)
 [![Proxmox VE](https://img.shields.io/badge/Proxmox-VE-E57000?logo=proxmox&logoColor=white)](https://www.proxmox.com/)
@@ -10,7 +10,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-22-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](#license)
 
-A standalone Bash installer that creates an unprivileged Debian 12 LXC container, installs 5eTools, configures it as a systemd service, and enables automatic nightly updates.
+A guided, automated installer that creates a Debian LXC container, installs 5eTools, optionally downloads image assets, configures automatic updates, and starts the web server.
 
 </div>
 
@@ -18,42 +18,99 @@ A standalone Bash installer that creates an unprivileged Debian 12 LXC container
 
 ## Overview
 
-This project automates the deployment of a local 5eTools server on Proxmox VE.
+This project provides a standalone installer for running a local 5eTools instance on Proxmox VE.
 
-The installer:
+The user launches the script once, selects the desired installation options, and the installer completes the remaining work automatically.
 
-- Creates a new unprivileged LXC container
-- Installs Node.js 22 and required packages
+### The installer automatically
+
+- Selects the next available Proxmox container ID
+- Creates an unprivileged Debian 12 LXC container
+- Installs Node.js 22 and required dependencies
 - Clones and prepares the 5eTools source
-- Runs 5eTools as a systemd service
-- Makes the site available on port `5050`
-- Creates optional image-download tooling
-- Enables nightly automatic updates
+- Optionally downloads the complete image repository
+- Creates and enables the 5eTools systemd service
+- Optionally enables nightly automatic updates
+- Starts 5eTools when installation finishes
+- Verifies that the web service is running
+- Displays the final browser URL and generated root password
 
 > [!IMPORTANT]
-> Run the installer from the **Proxmox host shell as root**.  
-> Do not run it from inside an existing LXC container or virtual machine.
+> Run the installer from the **Proxmox host shell as root**.
+> Do not run it from inside another LXC container or virtual machine.
 
 ---
 
 ## Quick Start
 
-Run the following commands on your Proxmox host:
+Download and run the installer from the Proxmox host:
 
 ```bash
-wget -O 5etools-standalone.sh   https://raw.githubusercontent.com/gmoran1016/proxmox-5etools/main/5etools-standalone.sh
+wget -O 5etools-standalone.sh \
+  https://raw.githubusercontent.com/gmoran1016/proxmox-5etools/main/5etools-standalone.sh
 
-chmod +x 5etools-standalone.sh
 bash 5etools-standalone.sh
 ```
 
-The installer will display the proposed container settings and ask for confirmation before creating anything.
+The installer presents the available options at startup. After the selections are made, no additional commands or input are required.
 
-After installation, open:
+> [!NOTE]
+> Running the script with `bash` does not require `chmod +x`.
+> The installer attempts to mark itself executable automatically when possible.
 
-```text
-http://CONTAINER-IP:5050/index.html
+---
+
+## Installation Options
+
+During an interactive installation, the script prompts for the available optional features before creating the container.
+
+Depending on the selected options, the installer can:
+
+- Download the full 5eTools image repository
+- Enable nightly automatic updates
+- Use the default Proxmox container configuration
+- Continue unattended after the initial selections
+
+Once the options are selected, the installation runs automatically and 5eTools starts at the end.
+
+---
+
+## Unattended Installation
+
+The installer also supports command-line options for fully unattended deployment.
+
+### Install with Default Settings
+
+```bash
+bash 5etools-standalone.sh --defaults
 ```
+
+This skips the interactive options and installs 5eTools using the standard defaults.
+
+### Install with Images
+
+```bash
+bash 5etools-standalone.sh --defaults --images
+```
+
+This performs an unattended installation and downloads the complete image repository during setup.
+
+### Specify a Container ID
+
+```bash
+bash 5etools-standalone.sh 120
+```
+
+The selected container ID must not already exist.
+
+Options can be combined when supported:
+
+```bash
+bash 5etools-standalone.sh 120 --defaults --images
+```
+
+> [!WARNING]
+> Confirm that the selected container ID is unused before starting the installer.
 
 ---
 
@@ -64,6 +121,7 @@ http://CONTAINER-IP:5050/index.html
 | Hostname | `5etools` |
 | Operating system | Debian 12 |
 | Container type | Unprivileged LXC |
+| Container ID | Next available ID |
 | Storage | `local-lvm` |
 | Template storage | `local` |
 | Disk size | 20 GB |
@@ -72,10 +130,11 @@ http://CONTAINER-IP:5050/index.html
 | Network bridge | `vmbr0` |
 | IP configuration | DHCP |
 | Web port | `5050` |
-| Automatic updates | Daily at approximately 1:00 AM |
+| Service startup | Automatic |
+| Image repository | User-selectable |
+| Nightly updates | User-selectable |
 
-> [!NOTE]
-> The default values can be changed near the top of `5etools-standalone.sh` before installation.
+The defaults can be changed near the beginning of `5etools-standalone.sh`.
 
 ---
 
@@ -83,7 +142,7 @@ http://CONTAINER-IP:5050/index.html
 
 Before running the installer, confirm that the Proxmox host has:
 
-- Proxmox VE installed and working
+- A working Proxmox VE installation
 - Root shell access
 - Internet connectivity
 - A storage target named `local-lvm`
@@ -91,75 +150,61 @@ Before running the installer, confirm that the Proxmox host has:
 - A Linux bridge named `vmbr0`
 - DHCP available on the selected network
 - At least 20 GB of free storage
+- Additional free space when downloading image assets
 
-Check your Proxmox storage configuration:
+Check available storage:
 
 ```bash
 pvesm status
 ```
 
-Check available network interfaces and bridges:
+Check available interfaces and bridges:
 
 ```bash
 ip link show
 ```
 
-If your environment uses different names, update the variables in the installer before running it.
+If the storage or bridge names differ, update the configuration variables in the installer before running it.
 
 ---
 
-## Installation Options
+## Installation Process
 
-### Automatic Container ID
+After the user selects the installation options, the script performs these steps automatically:
 
-When no container ID is supplied, the installer requests the next available ID from Proxmox:
+1. Checks that it is running as root on a Proxmox VE host
+2. Selects or accepts a container ID
+3. Locates or downloads the configured Debian 12 template
+4. Creates an unprivileged LXC container
+5. Starts the container and waits for networking
+6. Updates Debian packages
+7. Installs Git, curl, certificates, GnuPG, and Node.js 22
+8. Clones the 5eTools source into `/opt/5etools-src`
+9. Installs the Node.js dependencies
+10. Builds the production service worker
+11. Downloads image assets when selected
+12. Creates the `5etools.service` systemd unit
+13. Creates update tools and the update timer when selected
+14. Enables and starts the 5eTools service
+15. Verifies that the web server responds
+16. Displays the completed installation details
 
-```bash
-bash 5etools-standalone.sh
-```
-
-### Specific Container ID
-
-Pass the desired container ID as the first argument:
-
-```bash
-bash 5etools-standalone.sh 120
-```
-
-> [!WARNING]
-> The selected container ID must not already be in use.
-
----
-
-## What the Installer Creates
-
-The installer performs the following operations:
-
-1. Downloads the configured Debian 12 LXC template if needed
-2. Creates an unprivileged LXC container
-3. Starts the container and updates Debian
-4. Installs Git, curl, certificates, GnuPG, and Node.js 22
-5. Clones the 5eTools source into `/opt/5etools-src`
-6. Installs Node.js dependencies
-7. Builds the production service worker
-8. Creates the `5etools.service` systemd unit
-9. Creates an optional image repository helper
-10. Creates a manual update command at `/usr/bin/update`
-11. Creates and enables a nightly systemd update timer
+No separate image-install command or service-start command is required when those options are selected during installation.
 
 ---
 
 ## Accessing 5eTools
 
-When installation finishes, the script prints:
+When installation finishes, the script displays:
 
 - Container ID
 - Container IP address
 - Generated root password
 - Browser URL
-- Update and image-download commands
+- Image installation status
+- Automatic update status
 
-Open the displayed address in a browser:
+Open the displayed address:
 
 ```text
 http://CONTAINER-IP:5050/index.html
@@ -171,36 +216,32 @@ Example:
 http://192.168.1.50:5050/index.html
 ```
 
+The service starts automatically when the installer completes and whenever the container boots.
+
 ---
 
-## Optional Image Repository
+## Image Assets
 
-The default installation does not download the complete 5eTools image repository.
+The image repository contains monster artwork, maps, spell illustrations, and other assets.
 
-To download monster artwork, maps, spell illustrations, and other image assets, run:
-
-```bash
-pct exec CONTAINER_ID -- bash /opt/install-5etools-img.sh
-```
-
-Restart the service afterward:
+Select the image option when the installer starts, or use:
 
 ```bash
-pct exec CONTAINER_ID -- systemctl restart 5etools
+bash 5etools-standalone.sh --defaults --images
 ```
+
+When enabled, the images are downloaded during installation. The installer then starts 5eTools with the assets already available.
 
 > [!CAUTION]
-> The image repository can use approximately **5–7 GB** of additional disk space.
+> The image repository can require approximately **5–7 GB** of additional disk space and can significantly increase installation time.
 
 ---
 
-## Updating 5eTools
+## Automatic Updates
 
-### Automatic Updates
+When automatic updates are enabled, the installer creates a systemd timer that runs nightly at approximately `01:00`, with a randomized delay of up to five minutes.
 
-A systemd timer runs nightly at approximately `01:00`, with a randomized delay of up to five minutes.
-
-Each automatic update:
+Each update:
 
 1. Stops the 5eTools service
 2. Pulls the latest source changes
@@ -209,7 +250,7 @@ Each automatic update:
 5. Rebuilds the service worker
 6. Restarts the service
 
-### Manual Update
+### Run an Update Manually
 
 ```bash
 pct exec CONTAINER_ID -- bash /usr/bin/update
@@ -236,6 +277,8 @@ pct exec CONTAINER_ID -- systemctl list-timers 5etools-update.timer
 ---
 
 ## Service Management
+
+The installer enables and starts the service automatically.
 
 ### Check Service Status
 
@@ -265,7 +308,7 @@ pct exec CONTAINER_ID -- journalctl -u 5etools -f
 
 ## Customization
 
-Edit these variables near the top of `5etools-standalone.sh`:
+Edit the default configuration near the top of `5etools-standalone.sh`:
 
 ```bash
 CT_HOSTNAME="5etools"
@@ -285,7 +328,7 @@ CT_OS_TEMPLATE="debian-12-standard_12.7-1_amd64.tar.zst"
 ```
 
 > [!TIP]
-> If Proxmox offers a newer Debian 12 template under a different filename, update `CT_OS_TEMPLATE` before running the installer.
+> If the configured Debian template is no longer available, change `CT_OS_TEMPLATE` to a currently available Debian 12 template before running the installer.
 
 ---
 
@@ -301,6 +344,23 @@ Run it from the Proxmox host shell as root.
 </details>
 
 <details>
+<summary><strong>The installer exits because it is not root</strong></summary>
+
+Open the Proxmox root shell or switch to root:
+
+```bash
+su -
+```
+
+Then run:
+
+```bash
+bash 5etools-standalone.sh
+```
+
+</details>
+
+<details>
 <summary><strong>Configured storage does not exist</strong></summary>
 
 List available storage targets:
@@ -309,7 +369,7 @@ List available storage targets:
 pvesm status
 ```
 
-Update these installer variables as needed:
+Update these installer variables:
 
 ```bash
 CT_STORAGE="your-container-storage"
@@ -338,7 +398,7 @@ CT_BRIDGE="your-bridge-name"
 <details>
 <summary><strong>The container has no IP address</strong></summary>
 
-Inspect the container network configuration:
+Inspect the container networking:
 
 ```bash
 pct config CONTAINER_ID
@@ -359,7 +419,7 @@ Confirm that the container is running:
 pct status CONTAINER_ID
 ```
 
-Check the application service:
+Check the service:
 
 ```bash
 pct exec CONTAINER_ID -- systemctl status 5etools
@@ -371,22 +431,56 @@ Check listening ports:
 pct exec CONTAINER_ID -- ss -lntp
 ```
 
-Review service logs:
+View the service logs:
 
 ```bash
 pct exec CONTAINER_ID -- journalctl -u 5etools -n 100 --no-pager
 ```
 
-Also confirm that any Proxmox, container, router, or host firewall allows TCP port `5050`.
+Also verify that TCP port `5050` is allowed through any Proxmox, container, host, router, or client firewall.
+
+</details>
+
+<details>
+<summary><strong>The image download fails</strong></summary>
+
+Check available disk space:
+
+```bash
+pct exec CONTAINER_ID -- df -h
+```
+
+Confirm that the container can reach GitHub:
+
+```bash
+pct exec CONTAINER_ID -- curl -I https://github.com
+```
+
+Review the installer output for the failing Git command.
 
 </details>
 
 ---
 
+## File Locations
+
+| Purpose | Path inside the container |
+|:--|:--|
+| 5eTools source | `/opt/5etools-src` |
+| Image repository | `/opt/5etools-src/img` |
+| Image helper | `/opt/install-5etools-img.sh` |
+| Manual updater | `/usr/bin/update` |
+| Main service | `/etc/systemd/system/5etools.service` |
+| Update service | `/etc/systemd/system/5etools-update.service` |
+| Update timer | `/etc/systemd/system/5etools-update.timer` |
+| Update log | `/var/log/5etools-update.log` |
+
+---
+
 ## Uninstalling
 
-> [!DANGER]
-> Destroying the container permanently removes the 5eTools installation and all data stored inside that container.
+> [!CAUTION]
+> Destroying the container permanently removes 5eTools and all data stored inside the container.
 
 Stop and destroy the container:
 
@@ -399,20 +493,6 @@ Verify the container ID before running these commands.
 
 ---
 
-## File Locations
-
-| Purpose | Path inside the container |
-|:--|:--|
-| 5eTools source | `/opt/5etools-src` |
-| Image helper | `/opt/install-5etools-img.sh` |
-| Manual updater | `/usr/bin/update` |
-| Main service | `/etc/systemd/system/5etools.service` |
-| Update service | `/etc/systemd/system/5etools-update.service` |
-| Update timer | `/etc/systemd/system/5etools-update.timer` |
-| Update log | `/var/log/5etools-update.log` |
-
----
-
 ## Upstream Projects
 
 This installer deploys content from:
@@ -420,7 +500,7 @@ This installer deploys content from:
 - [5etools-mirror-3/5etools-src](https://github.com/5etools-mirror-3/5etools-src)
 - [5etools-mirror-3/5etools-img](https://github.com/5etools-mirror-3/5etools-img)
 
-This project is an independent deployment helper and is not affiliated with Wizards of the Coast or the upstream 5eTools maintainers.
+This repository is an independent deployment helper and is not affiliated with Wizards of the Coast or the upstream 5eTools maintainers.
 
 ---
 
@@ -428,4 +508,4 @@ This project is an independent deployment helper and is not affiliated with Wiza
 
 The installer script is provided under the MIT License.
 
-The upstream 5eTools source code, data, images, trademarks, and game content may be governed by separate licenses or terms. Review the relevant upstream repositories before redistributing any content.
+The upstream 5eTools source code, data, images, trademarks, and game content may be governed by separate licenses or terms. Review the relevant upstream repositories before redistributing content.

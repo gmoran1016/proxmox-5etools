@@ -43,20 +43,18 @@ The user launches the script once, selects the desired installation options, and
 
 ## Quick Start
 
-Download and run the installer from the Proxmox host:
+Run the installer directly from the Proxmox host shell with one command:
 
 ```bash
-wget -O 5etools-standalone.sh \
-  https://raw.githubusercontent.com/gmoran1016/proxmox-5etools/main/5etools-standalone.sh
-
-bash 5etools-standalone.sh
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/gmoran1016/proxmox-5etools/main/5etools-standalone.sh)"
 ```
 
-The installer presents the available options at startup. After the selections are made, no additional commands or input are required.
+The command downloads the latest installer directly into Bash, displays the installation options, completes the deployment, and starts 5eTools.
 
-> [!NOTE]
-> Running the script with `bash` does not require `chmod +x`.
-> The installer attempts to mark itself executable automatically when possible.
+No separate download, `chmod`, or second execution command is required.
+
+> [!IMPORTANT]
+> Run this command from the **Proxmox host shell as root**.
 
 ---
 
@@ -82,7 +80,7 @@ The installer also supports command-line options for fully unattended deployment
 ### Install with Default Settings
 
 ```bash
-bash 5etools-standalone.sh --defaults
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/gmoran1016/proxmox-5etools/main/5etools-standalone.sh)" -- --defaults
 ```
 
 This skips the interactive options and installs 5eTools using the standard defaults.
@@ -90,7 +88,7 @@ This skips the interactive options and installs 5eTools using the standard defau
 ### Install with Images
 
 ```bash
-bash 5etools-standalone.sh --defaults --images
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/gmoran1016/proxmox-5etools/main/5etools-standalone.sh)" -- --defaults --images
 ```
 
 This performs an unattended installation and downloads the complete image repository during setup.
@@ -98,7 +96,7 @@ This performs an unattended installation and downloads the complete image reposi
 ### Specify a Container ID
 
 ```bash
-bash 5etools-standalone.sh 120
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/gmoran1016/proxmox-5etools/main/5etools-standalone.sh)" -- 120
 ```
 
 The selected container ID must not already exist.
@@ -106,7 +104,7 @@ The selected container ID must not already exist.
 Options can be combined when supported:
 
 ```bash
-bash 5etools-standalone.sh 120 --defaults --images
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/gmoran1016/proxmox-5etools/main/5etools-standalone.sh)" -- 120 --defaults --images
 ```
 
 > [!WARNING]
@@ -227,7 +225,7 @@ The image repository contains monster artwork, maps, spell illustrations, and ot
 Select the image option when the installer starts, or use:
 
 ```bash
-bash 5etools-standalone.sh --defaults --images
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/gmoran1016/proxmox-5etools/main/5etools-standalone.sh)" -- --defaults --images
 ```
 
 When enabled, the images are downloaded during installation. The installer then starts 5eTools with the assets already available.
@@ -355,7 +353,7 @@ su -
 Then run:
 
 ```bash
-bash 5etools-standalone.sh
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/gmoran1016/proxmox-5etools/main/5etools-standalone.sh)"
 ```
 
 </details>

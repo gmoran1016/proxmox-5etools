@@ -51,7 +51,7 @@ The user launches the script once, selects the desired installation options, and
 Run the installer directly from the Proxmox host shell with one command:
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/gmoran1016/proxmox-5etools/main/install-5etools.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/gmoran1016/proxmox-5etools/main/install.sh)"
 ```
 
 The command downloads the latest installer directly into Bash, displays the installation options, completes the deployment, and starts 5eTools.

@@ -179,6 +179,15 @@ while (($#)); do
   esac
 done
 
+validate_port() {
+  local port="$1"
+
+  if [[ ! "${port}" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+    msg_error "Web port must be a number from 1 through 65535"
+    return 1
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # Pre-flight checks
 # ---------------------------------------------------------------------------
@@ -262,6 +271,23 @@ if [[ "${SHOW_MENU}" == "yes" ]]; then
     ENABLE_AUTO_UPDATES="no"
     [[ "${CHOICES}" == *'"images"'* ]] && INSTALL_IMAGES="yes"
     [[ "${CHOICES}" == *'"updates"'* ]] && ENABLE_AUTO_UPDATES="yes"
+
+    set +e
+    SELECTED_PORT=$(whiptail \
+      --title "5eTools Web Port" \
+      --inputbox "Enter the TCP port used by the 5eTools web server." \
+      10 64 "${SERVE_PORT}" \
+      3>&1 1>&2 2>&3)
+    PORT_STATUS=$?
+    set -e
+
+    if [[ ${PORT_STATUS} -ne 0 ]]; then
+      echo "Installation cancelled."
+      exit 0
+    fi
+
+    SERVE_PORT="${SELECTED_PORT}"
+    validate_port "${SERVE_PORT}" || exit 2
   elif [[ -t 0 ]]; then
     echo
     echo "Optional components:"
@@ -278,8 +304,15 @@ if [[ "${SHOW_MENU}" == "yes" ]]; then
       4) INSTALL_IMAGES="yes"; ENABLE_AUTO_UPDATES="no" ;;
       *) msg_error "Invalid selection"; exit 2 ;;
     esac
+
+    read -r -p "Web port [${SERVE_PORT}]: " MENU_PORT
+    SERVE_PORT="${MENU_PORT:-${SERVE_PORT}}"
+    validate_port "${SERVE_PORT}" || exit 2
   fi
 fi
+
+# Validate --port values and defaults for both interactive and unattended runs.
+validate_port "${SERVE_PORT}" || exit 2
 
 echo
 echo -e " ${YW}Container ID     :${CL} ${CT_ID}"
@@ -476,7 +509,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/opt/5etools-src
 Environment=NODE_ENV=production
-ExecStart=/usr/bin/npm run serve:dev -- --host 0.0.0.0 --port ${SERVE_PORT}
+ExecStart=/opt/5etools-src/node_modules/.bin/http-server -c-1 --cors --host 0.0.0.0 --port ${SERVE_PORT}
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

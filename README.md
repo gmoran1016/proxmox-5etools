@@ -32,6 +32,8 @@ The user launches the script once, selects the desired installation options, and
 - Creates and enables the 5eTools systemd service
 - Optionally enables nightly automatic updates
 - Starts 5eTools when installation finishes
+- Removes package caches and temporary installation files
+- Rolls back an incomplete container if installation fails
 - Verifies that the web service is running
 - Displays the final browser URL and generated root password
 
@@ -184,8 +186,9 @@ After the user selects the installation options, the script performs these steps
 12. Creates the `5etools.service` systemd unit
 13. Creates update tools and the update timer when selected
 14. Enables and starts the 5eTools service
-15. Verifies that the web server responds
-16. Displays the completed installation details
+15. Removes APT, npm, and temporary installation caches
+16. Starts and verifies the 5eTools web server
+17. Displays the completed installation details
 
 No separate image-install command or service-start command is required when those options are selected during installation.
 
@@ -271,6 +274,37 @@ pct exec CONTAINER_ID -- systemctl status 5etools-update.timer
 ```bash
 pct exec CONTAINER_ID -- systemctl list-timers 5etools-update.timer
 ```
+
+---
+
+## Installation Cleanup and Failure Rollback
+
+The installer cleans up after itself before completing.
+
+### Successful installation
+
+The installer automatically:
+
+- Removes unused Debian packages when safe to do so
+- Clears downloaded APT package caches
+- Removes stale APT package lists
+- Clears the npm download cache
+- Removes temporary files from `/tmp` and `/var/tmp` inside the container
+- Removes installer-specific temporary files from the Proxmox host
+
+The installed 5eTools source, optional images, systemd services, updater, and logs are preserved.
+
+### Failed installation
+
+If an error occurs after the new LXC container is created, the installer automatically:
+
+1. Stops the incomplete container when necessary
+2. Destroys the incomplete container
+3. Purges its Proxmox configuration
+4. Removes installer-specific temporary files
+
+> [!IMPORTANT]
+> Rollback applies only to the new container created by the current installer run. The installer refuses to use an existing container ID and will not remove an existing container.
 
 ---
 

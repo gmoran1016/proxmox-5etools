@@ -7,7 +7,7 @@
 [![Shell](https://img.shields.io/badge/Shell-Bash-4EAA25?logo=gnu-bash&logoColor=white)](https://www.gnu.org/software/bash/)
 [![Proxmox VE](https://img.shields.io/badge/Proxmox-VE-E57000?logo=proxmox&logoColor=white)](https://www.proxmox.com/)
 [![Debian](https://img.shields.io/badge/Debian-12-A81D33?logo=debian&logoColor=white)](https://www.debian.org/)
-[![Node.js](https://img.shields.io/badge/Node.js-22-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-24-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](#license)
 
 A guided, automated installer that creates a Debian LXC container, installs 5eTools, optionally downloads image assets, configures automatic updates, and starts the web server.
@@ -26,7 +26,7 @@ The user launches the script once, selects the desired installation options, and
 
 - Selects the next available Proxmox container ID
 - Creates an unprivileged Debian 12 LXC container
-- Installs Node.js 22 and required dependencies
+- Installs Node.js 24 and required dependencies
 - Clones and prepares the 5eTools source
 - Optionally downloads the complete image repository
 - Creates and enables the 5eTools systemd service
@@ -40,6 +40,9 @@ The user launches the script once, selects the desired installation options, and
 > [!IMPORTANT]
 > Run the installer from the **Proxmox host shell as root**.
 > Do not run it from inside another LXC container or virtual machine.
+
+> [!NOTE]
+> Current 5eTools releases require **Node.js 24 or newer**. The installer configures NodeSource 24.x and verifies the installed major version before continuing.
 
 ---
 
@@ -178,7 +181,7 @@ After the user selects the installation options, the script performs these steps
 4. Creates an unprivileged LXC container
 5. Starts the container and waits for networking
 6. Updates Debian packages
-7. Installs Git, curl, certificates, GnuPG, and Node.js 22
+7. Installs Git, curl, certificates, GnuPG, and Node.js 24
 8. Clones the 5eTools source into `/opt/5etools-src`
 9. Installs the Node.js dependencies
 10. Builds the production service worker

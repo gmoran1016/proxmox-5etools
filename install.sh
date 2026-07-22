@@ -60,6 +60,7 @@ CT_RAM="2048"
 CT_CPU="2"
 CT_BRIDGE="vmbr0"
 CT_OS_STORAGE="local"
+DEBIAN_VERSION="12"
 SERVE_PORT="5050"
 
 INSTALL_IMAGES="no"
@@ -91,6 +92,7 @@ Options:
   --ram MB               Set memory
   --cores COUNT          Set CPU core count
   --port PORT            Set the 5eTools web port
+  --debian VERSION       Use Debian 12 or Debian 13
   -h, --help             Show this help
 
 Examples:
@@ -159,6 +161,10 @@ while (($#)); do
       SERVE_PORT="${2:?Missing value for --port}"
       shift 2
       ;;
+    --debian)
+      DEBIAN_VERSION="${2:?Missing value for --debian}"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -186,6 +192,16 @@ validate_port() {
     msg_error "Web port must be a number from 1 through 65535"
     return 1
   fi
+}
+
+validate_debian_version() {
+  case "$1" in
+    12|13) return 0 ;;
+    *)
+      msg_error "Debian version must be 12 or 13"
+      return 1
+      ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -273,6 +289,25 @@ if [[ "${SHOW_MENU}" == "yes" ]]; then
     [[ "${CHOICES}" == *'"updates"'* ]] && ENABLE_AUTO_UPDATES="yes"
 
     set +e
+    SELECTED_DEBIAN=$(whiptail \
+      --title "Debian Version" \
+      --radiolist "Choose the Debian release for the LXC container." \
+      14 68 2 \
+      "12" "Debian 12 (Bookworm)" ON \
+      "13" "Debian 13 (Trixie)" OFF \
+      3>&1 1>&2 2>&3)
+    DEBIAN_STATUS=$?
+    set -e
+
+    if [[ ${DEBIAN_STATUS} -ne 0 ]]; then
+      echo "Installation cancelled."
+      exit 0
+    fi
+
+    DEBIAN_VERSION="${SELECTED_DEBIAN}"
+    validate_debian_version "${DEBIAN_VERSION}" || exit 2
+
+    set +e
     SELECTED_PORT=$(whiptail \
       --title "5eTools Web Port" \
       --inputbox "Enter the TCP port used by the 5eTools web server." \
@@ -305,14 +340,26 @@ if [[ "${SHOW_MENU}" == "yes" ]]; then
       *) msg_error "Invalid selection"; exit 2 ;;
     esac
 
+    echo
+    echo "Select Debian version:"
+    echo "  1) Debian 12 (Bookworm)"
+    echo "  2) Debian 13 (Trixie)"
+    read -r -p "Choice [1]: " DEBIAN_CHOICE
+    case "${DEBIAN_CHOICE:-1}" in
+      1) DEBIAN_VERSION="12" ;;
+      2) DEBIAN_VERSION="13" ;;
+      *) msg_error "Invalid Debian selection"; exit 2 ;;
+    esac
+
     read -r -p "Web port [${SERVE_PORT}]: " MENU_PORT
     SERVE_PORT="${MENU_PORT:-${SERVE_PORT}}"
     validate_port "${SERVE_PORT}" || exit 2
   fi
 fi
 
-# Validate --port values and defaults for both interactive and unattended runs.
+# Validate selected and command-line values.
 validate_port "${SERVE_PORT}" || exit 2
+validate_debian_version "${DEBIAN_VERSION}" || exit 2
 
 echo
 echo -e " ${YW}Container ID     :${CL} ${CT_ID}"
@@ -321,6 +368,7 @@ echo -e " ${YW}RAM              :${CL} ${CT_RAM} MB"
 echo -e " ${YW}CPU              :${CL} ${CT_CPU} cores"
 echo -e " ${YW}Disk             :${CL} ${CT_DISK} GB"
 echo -e " ${YW}Bridge           :${CL} ${CT_BRIDGE}"
+echo -e " ${YW}Debian version   :${CL} ${DEBIAN_VERSION}"
 echo -e " ${YW}Web port         :${CL} ${SERVE_PORT}"
 echo -e " ${YW}Install images   :${CL} ${INSTALL_IMAGES}"
 echo -e " ${YW}Automatic updates:${CL} ${ENABLE_AUTO_UPDATES}"
@@ -329,31 +377,37 @@ echo "Installation is starting automatically."
 echo
 
 # ---------------------------------------------------------------------------
-# Locate or download the newest Debian 12 template
+# Locate or download the newest selected Debian template
 # ---------------------------------------------------------------------------
-CURRENT_STEP="locating a Debian 12 template"
-msg_info "Checking for a Debian 12 template"
+CURRENT_STEP="locating a Debian ${DEBIAN_VERSION} template"
+msg_info "Checking for a Debian ${DEBIAN_VERSION} template"
+
+TEMPLATE_PATTERN="debian-${DEBIAN_VERSION}-standard_.*_amd64\\.tar\\.(zst|gz)$"
 
 TEMPLATE_PATH="$(
   pveam list "${CT_OS_STORAGE}" 2>/dev/null |
-    awk '/debian-12-standard_.*_amd64\.tar\.(zst|gz)$/ {print $1}' |
+    awk 'NR > 1 {print $1}' |
+    grep -E "${TEMPLATE_PATTERN}" |
     sort -V |
-    tail -n1
+    tail -n1 ||
+    true
 )"
 
 if [[ -z "${TEMPLATE_PATH}" ]]; then
-  msg_info "Downloading the latest Debian 12 template"
+  msg_info "Downloading the latest Debian ${DEBIAN_VERSION} template"
   pveam update &>/dev/null
 
   CT_OS_TEMPLATE="$(
     pveam available --section system 2>/dev/null |
-      awk '/debian-12-standard_.*_amd64\.tar\.(zst|gz)$/ {print $2}' |
+      awk '{print $2}' |
+      grep -E "${TEMPLATE_PATTERN}" |
       sort -V |
-      tail -n1
+      tail -n1 ||
+      true
   )"
 
   if [[ -z "${CT_OS_TEMPLATE}" ]]; then
-    msg_error "No Debian 12 template was found in the Proxmox appliance list"
+    msg_error "No Debian ${DEBIAN_VERSION} template was found in the Proxmox appliance list"
     exit 1
   fi
 
